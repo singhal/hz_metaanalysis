@@ -1,0 +1,389 @@
+---
+title: "Data_Munging"
+author: "sonal"
+date: "July 11, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Munging for Hybrid Zone Project
+
+## Rename columns to make life a bit easier
+```{r}
+setwd("~/Dropbox/hz_metaanalysis/data_analysis/")
+d = read.csv("hybrid zone taxa - hz_details.csv", stringsAsFactors = F, na.string=c(NA, ""))
+names(d) = c("SystemID", "Taxon1", "Taxon2", "moving",
+             "anthropogenic", "mtDNA_source1",
+             "mtDNA_source2", "mtDNA_genes", "bp",
+             "n1", "n2", "total", "mean_dist", "max_dist", 
+             "dist_type", "div_time", "div_time_source",
+             "div_time_Burleigh", "dispersal", "dispersal_units",
+             "gen_time",
+             "dispersal_type", "HWI", "critter",
+             "location", "citation", "notes", "enterer")
+```
+
+## make sure SystemID is unique
+```{r}
+cts = table(d$SystemID)
+cts[ cts > 1]
+```
+
+## make sure Taxon1 - Taxon2 not duplicated
+```{r}
+sps = c(d$Taxon1, d$Taxon2)
+sps = table(sps)
+poss_dups = names(sps[sps > 1])
+cat("Possibly Duplicated Studies\n")
+for (i in 1:length(poss_dups)) {
+  d1 = d[(d$Taxon1 == poss_dups[i] | d$Taxon2 == poss_dups[i]), ]
+  
+  comps = c(d1$Taxon1, d1$Taxon2)
+  comps = comps[comps != poss_dups[i]]
+  comps = table(comps)
+  comps = comps[comps > 1]
+  if (length(comps) > 0) {
+    cat("***\n")
+    cat(poss_dups[i], "\n")
+    cat(d1$SystemID, "\n")
+    cat("***\n")
+  }
+}
+```
+
+## Clean up moving column
+```{r}
+d[d$moving %in% c("yes?", "possibly", "maybe", "could be; mtDNA non-coincident with nDNA"), "moving"] = "possibly"
+d[!complete.cases(d$moving), "moving"] = "unknown"
+```
+
+## Clean up anthropogenic column
+```{r}
+d[d$anthropogenic %in% c("maybe", "possibly"), "anthropogenic"] = "possibly"
+d[d$anthropogenic %in% c("partly", "yes"), "anthropogenic"] = "yes"
+```
+
+## Clean up calculated or from lit column
+```{r}
+d[grep('lit', d$mtDNA_source2), 'mtDNA_source2'] = 'literature'
+```
+
+## Clean up mtDNA.gene.s
+```{r}
+d[which(d$mtDNA_genes == 'CO1'), 'mtDNA_genes'] = 'COI'
+d[which(d$mtDNA_genes == '(complete genome sequenced)'), 'mtDNA_genes'] = 'complete genome'
+d[which(d$mtDNA_genes == 'cyt-b'), 'mtDNA_genes'] = 'cytb'
+d[which(d$mtDNA_genes == 'D-loop'), 'mtDNA_genes'] = 'd-loop'
+d[which(d$mtDNA_genes == 'nad1'), 'mtDNA_genes'] = 'ND1'
+d[which(d$mtDNA_genes == 'NADH2'), 'mtDNA_genes'] = 'ND2'
+```
+
+## Add mtDNA coding vs. non-coding
+```{r}
+d$mtDNA_coding = NA
+d[grep("ATP", d$mtDNA_genes), "mtDNA_coding"] = "coding"
+d[grep("COI", d$mtDNA_genes), "mtDNA_coding"] = "coding"
+d[grep("cyt", d$mtDNA_genes), "mtDNA_coding"] = "coding"
+d[grep("ND", d$mtDNA_genes), "mtDNA_coding"] = "coding"
+d[grep("16s", d$mtDNA_genes), "mtDNA_coding"] = "non-coding"
+```
+
+## Clean up bp column
+```{r}
+d[d$SystemID == 113, 'bp'] = 7170
+d$bp = as.numeric(d$bp)
+```
+
+## Clean up n1 + n2 column
+```{r}
+d[d$SystemID == 20, 'n1'] = 67
+d[d$SystemID == 113, 'n1'] = 3
+d[d$SystemID == 20, 'n2'] = 38
+d[d$SystemID == 113, 'n2'] = 3
+d$n1 = as.numeric(d$n1)
+d$n2 = as.numeric(d$n2)
+d$total = d$n1 + d$n2
+```
+
+## Genetic Distances to consider
+A number of species have complicated situations
+- _Malurus melanocephalus_
+  - suggest to put value not corrected for w/in region diversity
+  - not using da for other species
+- _Setophaga auduboni_ 
+  - take weighted average
+```{r}
+# update distance for Malurus
+d[d$SystemID == 68, 'mean_dist'] = 0.018
+# Setophaga audoboni
+d[d$SystemID == 113, 'mean_dist'] = (978 * 0.03594 + 998 * 0.03886 + 911 * 0.03147 + 736 * 0.04636 + 673 * 0.02861 + 807 * 0.07134 + 954 * 0.04519 + 1113 * 0.03478) / 7170
+# Setophaga audoboni
+d[d$SystemID == 112, 'mean_dist'] = (0.00216 + 0.00219 + 0.01296) / 3
+
+d$mean_dist = as.numeric(d$mean_dist)
+```
+  
+# "dist_type"  
+```{r}
+d[which(d$dist_type == 'K2P'), 'dist_type'] = 'Kimura-2P'
+d[which(d$dist_type == 'TN83'), 'dist_type'] = 'TN93'
+```
+
+# Dispersal type
+```{r}
+d[grep("LD", d$dispersal_type), "dispersal_type"] = 'LD'
+d[grep("recapture", d$dispersal_type), "dispersal_type"] = 'recapture'
+d[grep("mark", d$dispersal_type), "dispersal_type"] = 'recapture'
+d[grep("RMS", d$dispersal_type), "dispersal_type"] = 'RMS'
+d[grep("sigma", d$dispersal_type), "dispersal_type"] = 'sigma'
+d[grep("Rousset", d$dispersal_type), "dispersal_type"] = 'sigma'
+d[grep("cline", d$dispersal_type), "dispersal_type"] = 'cline'
+d[grep("direct", d$dispersal_type), "dispersal_type"] = 'direct'
+d[!d$dispersal_type %in% c("LD", "recapture", "RMS", "sigma", "cline", "direct"), "dispersal_type"] = "other"
+```
+
+## Clean up dispersal
+- Ammodramus nelsoni 4
+  - go with Jay estimate?
+- Aphelocoma californica calfiornica 9
+  - go with 2.5 as midway of midway estimates?
+- Artemisiospiza nevadensis 12
+  - go with 10?
+- Beaolophus atricristatus 13
+  - go with 0.343 for closest relative?
+- Bombina bombina 15
+  - go with 0.89 because in between all estimates
+- Cottus rhenanus 26
+  - go with 6
+- Dinopium benghalense 32 
+  - go with woodpecker estimate
+- Geomys breviceps 42
+- Geomys bursarius 43
+- Geomys bursarius major 44
+  - go with 0.25
+```{r}
+# Ammodramus nelsoni 4
+d[d$SystemID == 4, "dispersal"] = 2.6
+# Aphelocoma californica calfiornica 9
+d[d$SystemID == 9, "dispersal"] = 2.5
+# Artemisiospiza nevadensis 12
+d[d$SystemID == 12, "dispersal"] = 10
+# Beaolophus atricristatus 13
+d[d$SystemID == 13, "dispersal"] = 0.343
+# Bombina bombina 15
+d[d$SystemID == 15, "dispersal"] = 0.89
+# Cottus rhenanus 26
+d[d$SystemID == 26, "dispersal"] = 6
+# Dinopium benghalense 32
+d[d$SystemID == 32, "dispersal"] = 10
+# Geomys breviceps 42
+d[d$SystemID == 42, "dispersal"] =  0.25
+# Geomys bursarius 43 
+d[d$SystemID == 43, "dispersal"] = 0.25
+# Geomys bursarius major 44
+d[d$SystemID == 44, "dispersal"] = 0.25
+# Larus glaucescens 65
+d[d$SystemID == 65, "dispersal"] = 140
+# Malurus melanocephalus 68
+d[d$SystemID == 68, "dispersal"] = 12.04
+# Mus musculus musculus 77
+d[d$SystemID == 77, "dispersal"] = 0.65
+# Passer italiae 88
+d[d$SystemID == 88, "dispersal"] = 4.89
+# Pipilo ocai 94
+d[d$SystemID == 94, "dispersal"] = 1.7
+# Poecile atricapillus 97
+d[d$SystemID == 97, "dispersal"] = 9.6
+d[d$SystemID %in% c(106, 107, 108), "dispersal"] = 0.2
+# Sceloporus grammicus F5 111
+d[d$SystemID == 111, "dispersal"] = 0.16
+# Setophaga auduboni 112
+d[d$SystemID == 112, "dispersal"] = 20
+# Setophaga auduboni N 113
+d[d$SystemID == 113, "dispersal"] = 20
+# Sorex araneus - Novosibirsk 116
+d[d$SystemID == 116, "dispersal"] = 1
+# Sula nebouxii 125
+d[d$SystemID == 125, "dispersal"] = 0.045
+# Thomomys bottae Colorado population 129
+d[d$SystemID == 129, "dispersal"] = 0.25
+# Thomomys bottae connectans 130
+d[d$SystemID == 130, "dispersal"] = 0.25
+# Uroderma bilobatum 38 132
+d[d$SystemID == 132, "dispersal"] = 12.5
+# Zosterops pallidus 136
+d[d$SystemID == 136, "dispersal"] = NA
+# Setophaga occidentalis 138
+d[d$SystemID == 138, "dispersal"] = 31
+# Strix owls 139
+d[d$SystemID == 139, "dispersal"] = 28
+
+d$dispersal = as.numeric(d$dispersal)
+```
+
+
+## Clean Up Critters Column
+```{r}
+d[d$critter %in% c("bat", "gopher", "lemur", "mole", "rabbit", "rodent", "shrew", "squirrel", "vole"), "critter"] = "mammal"
+d[d$critter %in% c("frog", "newt", "salamander", "salamanders", "toad"), "critter"] = 'amphibian'
+d[d$critter %in% c("gecko", "lizard", "lizards", 'reptile', 'skink', 'snake', 'turtle'), 'critter'] = 'NAR'
+d[d$critter %in% c('bee', 'beetle', 'butterfly', 'cricket', 'grasshopper', 'insect', 'termite', 'weta'), "critter"] = 'insect'
+d[d$critter %in% c("oyster", "mollusc", "mussel", 'coral', 'crab', 'slug'), "critter"] = 'other invertebrates'
+```
+
+## Clean Up location
+```{r}
+d[d$location %in% c("Arizona", "Atlantic coast Florida", "California", "Caribbean", "eastern North America", "Mexico", "Nebraska", "New England", "Rockies", "southwest USA", "sw USA", "Texas", "Texas/Oklahoma", "West Coast", "western North America", 'N American coast', "Martinique"), 'location'] = 'North America'
+d[d$location %in% c("Baltic Sea", "central Europe", "Germany", "Iberian pennisula", "Italian Alps", "Italy", "Jutland/Germany", "Poland", "Portugal", 'Pyrenees', 'Spain', 'Ukraine', 'Scandinavia', "Poland & Ukraine", "Sweden"), 'location'] = 'Europe'
+d[d$location %in% c('Colombia', 'Peru', 'Peruvian coast' ,'South America (Bolivia)'), 'location'] = 'South America'
+d[d$location %in% c('China', 'Japan', 'Sri Lanka'), 'location'] = 'Asia'
+d[d$location %in% c('Siberia', 'Russia'), 'location'] = 'Eurasia'
+d[d$location %in% c("East Africa", "Madagascar"), 'location'] = 'Africa'
+d[d$location %in% c('Panama'), 'location'] = 'Central America'
+d[d$location %in% c('New Zealand', "Australia"), "location"] = 'Australia/NZ'
+```
+
+## Clean up Enterer
+```{r}
+d[d$enterer == 'Sonal, Jay', 'enterer'] = 'both'
+d[d$enterer == 'Sonal/Jay', 'enterer'] = 'both'
+```
+
+# check to make sure all cline details match to hz details
+# make sure all clines have hz
+# AND
+# make sure all hz have clines
+```{r}
+x = read.csv("hybrid zone taxa - cline_details.csv", stringsAsFactors = F, na.string=c(NA, ""))
+x$SystemID = rep(NA, nrow(x))
+uniq = unique(x[, c("Taxon1", "Taxon2")])
+for (i in 1:nrow(uniq)) {
+  tax1 = uniq[i, "Taxon1"]
+  tax2 = uniq[i, "Taxon2"]
+  t = d[(d$Taxon1 == tax1) & (d$Taxon2 == tax2), ]
+  if (nrow(t) != 1) {
+    cat(tax1, tax2, "\n")
+  } else {
+    x[(x$Taxon1 == tax1) & (x$Taxon2 == tax2), "SystemID"] = t$SystemID
+  }
+}
+
+uniq = unique(d$SystemID)
+for (i in 1:length(uniq)) {
+  t = x[x$SystemID == uniq[i], ]
+  if (nrow(t) < 1) {
+    cat(uniq[i], d[d$SystemID == uniq[i], "Taxon1"], "\n")
+  }
+}
+```
+
+# Check Transect Ids are unique
+# And get all systems with multiple transects
+```{r}
+trans = split(x, x$TransectID)
+cts = lapply(trans, function(y) {return(length(unique(y$SystemID)))})
+cts[cts > 1]
+
+trans = split(x, x$SystemID)
+cts = lapply(trans, function(y) {return(length(unique(y$TransectID)))})
+xx = x[x$SystemID %in% names(cts[cts > 1]), c("SystemID", "Taxon1", "Taxon2", "TransectID", "notes")]
+xx = unique(xx)
+# write.csv(xx, "~/Desktop/test.csv")
+```
+
+# Clean up type
+## Some notes
+- not available: this was allozymes -- Sonal messed up
+- nuclear and mtDNA: putting into nuc category because mostly nuclear
+- dysfunction phenotype: putting in morphology though it seems like it really isn't morph -- no better category?
+- isotype: putting in morphology though it seems like it really isn't morph -- no better category?
+```{r}
+sig1 = c("dewlap", "plumage hybrid index", "copulatory piece width (genitalia)", 
+           "copulatory piece length (genitalia)", "color pattern", "plumage", 
+           "male genitalia size", "crown color")
+x[x$details %in% sig1, "type"] = x[x$details %in% sig1, "details"]
+
+nuc = c("allozyme", "allozymes", "AFLP", "autosomal", "isozyme", "microsat", "microsatellite hybrid index", "microsatellites", "microsats", "msat", "msats", "nDNA", "nuclear", "RFLP", "SNP", "SNPs", "average", "enzymes", "molecular", "nuclear and mtdna", 'autosomal SNPs', 'molecular HI')
+slink = c("sex-linked", "Y-chromosome", "z-linked", "sex-chromosome")
+odna = c("cpDNA", "mitochondrial", "mtDNA", "mtdna")
+chr = c("chromosome", "chromosomal - inversion?", "chromosomes", "karyotype")
+morph = c("morphological", "morphology", "quantitative trait", "dysfunction phenotype", "isotope", "plumage/morphology")
+signal = c("song", "phenotype", "plumage", "acoustic", "chemical", "color", "color pattern", "behavior")
+
+# check details
+# "algal symbiont!" 
+# "sex chromosome" 
+
+x[x$type %in% nuc, "type"] = "nuclear"
+x[x$type %in% slink, "type"] = "sexlinked"
+x[x$type %in% odna, "type"] = "mtDNA"
+x[x$type %in% chr, "type"] = "karyotype"
+x[x$type %in% morph, "type"] = "morphology"
+x[x$type %in% signal, "type"] = "mating-traits"
+x[x$type %in% sig1, "type"] = "mating-traits"
+
+# another round of checks
+x[which(x$details == 'Ychr'), 'type'] = "sexlinked"
+x[which(x$details == 'sex chromosome'), 'type'] = "sexlinked"
+x[which(x$details == "Cytochrome B") , 'type'] = 'mtDNA'
+x[which(x$details == "Cytochrome c oxidase subunit I") , 'type'] = 'mtDNA'
+# for lack of anything better
+x[which(x$details == 'algal symbiont!'), 'type'] = 'morphology'
+```
+
+# Clean up biallelic vs quantiative
+- not available -- this is Spalax and must be biallelic
+```{r}
+x[!complete.cases(x$biallelic_or_quantitative), 'biallelic_or_quantitative']  = 'quantitative'
+x[x$biallelic_or_quantitative %in% c("multilocus", "quantiative", "quantitative?", "quantitiative", "not available"), "biallelic_or_quantitative"] = 'quantitative'
+
+# clean up biallelic and quantitative
+x[which(x$num_markers == 12 & x$type == 'karyotype'), "biallelic_or_quantitative"] = 'quantitative'
+x[x$type == 'mating-traits', "biallelic_or_quantitative"] = 'quantitative'
+x[x$type == 'morphology', "biallelic_or_quantitative"] = 'quantitative'
+
+x[which(x$type == 'nuclear' & x$num_markers > 1), "biallelic_or_quantitative"] = 'quantitative'
+x[x$type == 'nuclear' & x$details %in% c("multilocus allozyme cline", "New Hybrids hybrid index of AFLPs", "HI", "SNPs"), "biallelic_or_quantitative"] = 'quantitative'
+x[which(x$type == 'nuclear' & x$num_markers == 1 & x$biallelic_or_quantitative == 'quantitative'), "biallelic_or_quantitative"] = 'biallelic'
+
+```
+
+# Clean up widths
+```{r}
+x$width = as.numeric(x$width..km.)
+```
+
+
+# Double check columns
+```{r}
+check <- function(vec, df) {
+  for (i in 1:length(vec)) {
+    col = vec[i]
+    cat('***\n', col, "\n")
+    cts = table(df[, col])
+    if (mean(cts) > 3) {
+      cat(paste(names(table(df[, col])), ": ", table(df[, col])), sep="\n")
+    } else {
+      cat("not printing table; too many unique\n")
+    }
+    cat(sum(is.na(df[, col])), "\n")
+  }
+} 
+
+dcheck = c("moving", "anthropogenic", "mean_dist", "dispersal", "critter", "dist_type", "dispersal_type", "location")
+check(dcheck, d)
+
+xcheck = c("type", "biallelic_or_quantitative", "width")
+check(xcheck, x)
+```
+
+
+# Combine data sets
+```{r}
+y = merge(d, x, by = c("SystemID", "Taxon1", "Taxon2"))
+
+write.csv(y, paste("cleaned_combined_data-", format(Sys.Date(), format="%b-%d-%y"), ".csv", sep=""), row.names=F)
+```

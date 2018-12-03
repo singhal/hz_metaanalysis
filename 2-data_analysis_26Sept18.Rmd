@@ -1,0 +1,887 @@
+---
+title: "Data Analysis for HZ"
+author: "sonal and jay"
+date: "January 4, 2018; updated 11 July 18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, fig.width = 3, fig.height = 2)
+
+library(cowplot)
+library(lme4)
+library(MuMIn)
+library(r2glmm)
+```
+
+## Load functions
+
+```{r}
+# https://stackoverflow.com/questions/2602583/geometric-mean-is-there-a-built-in
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+
+
+sub_summarize <- function(model, low_model) {
+    # make a model summary
+    # structure, log likeli, aicc, r2GLMM - fixed, r2glmm - condition
+    name = as.character(model@call)[2]
+    d = summary(model)$logLik
+    lnl = round(as.numeric(gsub('^.*df=', '', d)), 1)
+    df = attr(d, 'df')
+    aic = round(AICc(model), 1)
+    daic = AICc(model) -  AICc(low_model)
+    daic = round(daic, 3)
+    fixed_r2 = round(as.numeric(r.squaredGLMM(model)[1]), 3)
+    cond_r2 = round(as.numeric(r.squaredGLMM(model)[2]), 3)
+    res = list(name, df, lnl, aic, daic, fixed_r2, cond_r2)
+    names(res) = c("formula", "d.f.", "log like", "AICc", "dAIC", "r2 fixed", "r2 cond")
+    return(res)
+}
+
+summarize_model <- function(models) {
+  aiccs = unlist(lapply(models, AICc))
+  low = which(aiccs == min(aiccs))
+  
+  res = sapply(models, sub_summarize, models[[low]])
+  res = t(res)
+  
+  modavg1 <- model.avg(models)
+  modavg2 = summary(modavg1)
+  # factors
+  col1 = dimnames(modavg2$coefmat.full)[[1]]
+  # coef
+  col2 = round(modavg2$coefmat.full[, 1], 3)
+  # se
+  col3 = round(modavg2$coefmat.full[, 3], 3)
+  # rel imp
+  relimp = round(as.vector(modavg2$importance), 3)
+  names(relimp) = names(modavg2$importance) 
+
+  res2 = data.frame(coef = col2, coef_se = col3)
+  res3 = data.frame(terms = names(relimp), RI=relimp)  
+  return(list(res, res2, res3))
+}
+
+
+summarize_lm_sub <- function(model) {
+  fmla = as.character(model$call)[2]
+  aic = round(AICc(model), 1)
+  r2 = round(summary(model)$adj.r.squared, 3)
+  df =  paste(summary(model)$df[1:2], collapse=",")
+  res = list(fmla, df, aic, r2)
+  return(res)
+}
+
+summarize_lm <- function(models) {
+  res = as.data.frame(t(sapply(models, summarize_lm_sub)))
+  
+  names(res) = c("formula", "df", "AICc", "adj. r-squared")
+  res$rel_likelihood = round(exp((min(unlist(res$AICc)) - unlist(res$AICc)) / 2), 3)
+  res <- apply(res,2,as.character)
+  
+  # model averaging 1
+  modavg1 = model.avg(models)
+  modavg2 = summary(modavg1)
+  # factors
+  col1 = dimnames(modavg2$coefmat.full)[[1]]
+  # coef
+  col2 = modavg2$coefmat.full[, 1]
+  # se
+  col3 = modavg2$coefmat.full[, 3]
+  res2 = data.frame(terms = col1, coef = col2, coef_se = col3)
+  
+  # rel imp
+  relimp = data.frame(modavg2$importance)
+
+  return(list(res, res2, relimp))
+}
+```
+
+
+## Load Data 
+```{r}
+setwd("~/Dropbox/hz_metaanalysis/data_analysis/")
+outdir = '~/Dropbox/hz_metaanalysis/manuscript/figures/'
+orig = read.csv("cleaned_combined_data-Sep-26-18.csv", stringsAsFactors = F, na.strings = c("", "NA"))
+
+# add in HWI data
+hwi = read.csv("bird_HWIs.csv", stringsAsFactors = F, na.strings = c("", "NA"))
+orig$HWI = hwi[match(orig$SystemID, hwi$SystemID), 'HWI_mean']
+orig$disp_or_HWI = !is.na(orig$dispersal) | !is.na(orig$HWI)
+
+## All systems have either dispersal estimates or HWI
+num1 = length(unique(orig$SystemID))
+x = orig[orig$disp_or_HWI == TRUE, ]
+x = x[complete.cases(x$mean_dist), ]
+x = x[complete.cases(x$width), ]
+num2 = length(unique(x$SystemID))
+```
+Before cleaning, there were `r num1` studies, and, after, `r num2`. A few studies were dropped because of missing mtDNA distance.
+
+## Transform, Log, Center data etc.
+```{r}
+x$log_dispersal = scale(log(x$dispersal))
+x$log_HWI = scale(log(x$HWI))
+x$log_dist = scale(log(x$mean_dist))
+x$log_width = log(x$width)
+
+# create unique hybrid zoens
+s = x[, c(names(x)[1:29], "log_dispersal", "log_dist", "log_HWI")]
+s = unique(s)
+```
+
+```{r, echo=F}
+ggplot(s, aes(log_dist)) + geom_histogram(binwidth=0.5) + xlab("scaled mtDNA dist")
+ggplot(s, aes(sample=log_dist)) + stat_qq()
+```
+
+```{r, echo=F}
+ggplot(s, aes(log_dispersal)) + geom_histogram(binwidth=0.5) + xlab("scaled dispersal")
+ggplot(s, aes(sample=log_dispersal)) + stat_qq()
+```
+
+```{r, echo=F}
+ggplot(s, aes(log_HWI)) + geom_histogram(binwidth=0.5) + xlab("scaled HWI")
+ggplot(s, aes(sample=log_HWI)) + stat_qq()
+```
+
+
+## Check for outliers
+There are two hybrid zones that are quite divergent, _Hyla arborea x orientalis_ and _Mytilus edulis x trossulus_. Will double check them both as those distances were calculated using NCBI data. (They seemed okay.)
+
+```{r, echo=F}
+ggplot(s, aes(mean_dist)) + geom_histogram(binwidth=0.005) + xlab("mtDNA dist")
+```
+
+There are a few outliers in the dispersal data ... all birds. There are `r nrow(s[s$dispersal < 0.1, ])` taxa that exhibit very low dispersal rates (< 0.1), and these do not appear to be outliers.
+
+```{r, echo=F}
+ggplot(s, aes(dispersal)) + geom_histogram(binwidth=4) + xlab("dispersal")
+
+```
+
+## Some basic descriptive graphs
+```{r}
+a = ggplot(s, aes(critter)) + geom_bar() +  coord_flip() + xlab("taxonomic group")
+```
+
+The data set is pretty balanced across taxonomic groups, though not that many studies in fish. (Most fish studies I found exhibited more mosaic patterns, interestingly.)
+
+```{r}
+b = ggplot(s, aes(location)) + geom_bar() +  coord_flip() 
+ab = plot_grid(a, b, labels = c("A", "B"), nrow = 1, align = "h")
+save_plot(paste(outdir, 'study_details.png', sep=""), ab, ncol = 2, nrow = 1, base_aspect_ratio = 1.3, base_width = 5)
+```
+
+The dataset is heavily biased towards temperate regions (not surprisingly given where the money is) -- but, does that mean we are also picking up on a lot of post-glacial expansions (i.e., Hewitt 1999)? The genetic distance doesn't seem to suggest so, though.
+
+There is quite a range in dispersal patterns, much of which is reflected in taxonomic groups.
+```{r}
+a = ggplot(s, aes(critter, log_dispersal)) + geom_boxplot() + coord_flip() + ylab("log(dispersal)") + xlab("taxonomic group")
+save_plot(paste(outdir, 'dispersal_by_taxonomic_group.png', sep=""), a, base_aspect_ratio = 1.3, base_height = 3)
+dis_taxon = lm(s$log_dispersal ~ s$critter)
+```
+
+
+```{r}
+clno=data.frame(table(x$SystemID))
+clno$num_types = unlist(lapply(split(x, x$SystemID), function(df) {length(unique(df$type))}))
+a = ggplot(clno, aes(Freq)) + geom_histogram(binwidth=0.2) + xlab("number of clines") + scale_x_log10()
+b = ggplot(clno, aes(num_types)) + geom_histogram(binwidth=1) + xlab("number of cline types")
+t = unique(x[,c("type", "SystemID")])
+c = ggplot(t, aes(type)) + geom_bar() +  coord_flip() + xlab("number of studies")
+
+clgraph = plot_grid(a, b, c, labels = c("A", "B", "C"), nrow = 1, align = "h")
+save_plot(paste(outdir, 'cline_data.png', sep=""), clgraph,
+          ncol = 3, nrow = 1, base_width = 5, base_aspect_ratio = 1.3
+          )
+```
+
+On average, we estimated a median of `r median(clno$Freq)` clines per hybrid zone, across an average of `r mean(clno$num_types)` types. The most common cline type inferred for a hybrid zone was nuclear and mitochondrial clines.
+
+```{r}
+ggplot(x, aes(type, log_width)) + geom_boxplot() + coord_flip() + xlab("cline type") + ylab("cline width")
+ggplot(x, aes(biallelic_or_quantitative, log_width)) + geom_boxplot() + coord_flip() + xlab("cline type") + ylab("cline width")
+```
+
+Widths do seem to vary across different types of clines. My intuition here is that clines that are more summative (i.e., quantitative clines reflected in morphology or karyotype) tend to be narrower. 
+
+```{r, echo=F}
+HWI_disp_corr_data <- s[which(!is.na(s$log_dispersal) & !is.na(s$log_HWI)),]
+HWI_disp_corr_data$outlier <- ifelse(HWI_disp_corr_data$log_dispersal > -1, FALSE, TRUE)
+a = ggplot(HWI_disp_corr_data, aes(log_HWI, log_dispersal)) + geom_point(aes(color = outlier)) + xlab("log(HWI)") + ylab("log(dispersal)") + scale_color_manual(values=c("black", "red")) + theme(legend.position="none")
+phydist = read.csv("bird_phydist.csv", stringsAsFactors = F)
+phydist$type = ifelse(phydist$Burleigh > 15, "outlier", "ok")
+b = ggplot(phydist, aes(Burleigh, mtDNA_dist)) + geom_point(aes(color = type)) + xlab("phylogenetic distance") + ylab("mtDNA distance") + scale_color_manual(values=c("black", "red")) + theme(legend.position="none")
+
+corr1 = cor.test(HWI_disp_corr_data$log_HWI, HWI_disp_corr_data$log_dispersal)
+HWI_outlier_removed <- HWI_disp_corr_data[which(HWI_disp_corr_data$Taxon1 != "Sula nebouxii"),]
+corr1a = cor.test(HWI_outlier_removed$log_HWI, HWI_outlier_removed$log_dispersal)
+
+##examine correlation of HWI and dispersal distance while controlling for phylogeny
+
+library(ape)
+library(phylolm)
+phy <- read.tree("bigbird_new_BLs.tre")
+j<-lapply(phy$tip.label, function(x) strsplit(x, split="_"))
+tippies<-unlist(lapply(j, function(x) paste(x[[1]][3],x[[1]][4], sep=" ")))
+phy$tip.label <- tippies
+HWI_phylo_tax <- read.csv("taxonomic_reconciliation_HWI_disp.csv")
+HWI_phylo_tax$hz_name <- as.character(HWI_phylo_tax$hz_name)
+HWI_phylo_tax$burleigh_name <- as.character(HWI_phylo_tax$burleigh_name)
+HWI_disp_corr_data$phylo_name <- HWI_disp_corr_data$Taxon1
+
+for(i in 1:length(HWI_disp_corr_data$phylo_name)){
+ if (HWI_disp_corr_data$phylo_name[i] %in% HWI_phylo_tax$hz_name){
+   HWI_disp_corr_data$phylo_name[i] <- HWI_phylo_tax$burleigh_name[which(HWI_phylo_tax$hz_name == HWI_disp_corr_data$phylo_name[i])]
+ }
+}
+
+##Remove doubled-up species for phylogenetic analysis
+##Setophaga auduboni N, Sphyrapicus ruber (better HWI sampling for Sphyrapicus varius than Sphyrapicus nuchalis, so remove based on Taxon2 == Sphyrapicus nuchalis), Hirundo rustica tytleri
+
+HWI_phylo_test <- HWI_disp_corr_data[which(!HWI_disp_corr_data$phylo_name %in% c("Setophaga auduboni N", "Hirundo rustica tytleri")),]
+HWI_phylo_test <- HWI_phylo_test[which(HWI_phylo_test$Taxon2 != "Sphyrapicus nuchalis"),]
+
+##Must remove species without an independent dispersal estimate for the hybridizing taxa (i.e. eliminate those for generalized North American migrants). Remove: Amphispiza belli, Dinopium shorii, Hirundo rustica, Geothlypis tolmiei, Pheucticus melanocephalus, Sphyrapicus ruber, 
+HWI_phylo_test <- HWI_phylo_test[which(!HWI_phylo_test$phylo_name %in% c("Amphispiza belli", "Dinopium shorii", "Hirundo rustica", "Geothlypis tolmiei", "Pheucticus melanocephalus", "Sphyrapicus ruber")),]
+
+##n = 24 for phylogenetic correlation
+phy <- drop.tip(phy, tip = phy$tip.label[which(!phy$tip.label %in% HWI_phylo_test$phylo_name)])
+phy_corr1 <- phylolm(log_dispersal ~ log_HWI, data = HWI_phylo_test, phy = phy, model = c("OUrandomRoot"))
+sink("phylogenetic_disp_dist_by_HWI.txt")
+print(summary(phy_corr1))
+sink()
+
+corr2 = cor.test(phydist$Burleigh, phydist$mtDNA_dist)
+phydist_no = phydist[phydist$Taxon1 != 'Baeolophus atricristatus', ]
+corr2a = cor.test(phydist_no$Burleigh, phydist_no$mtDNA_dist) 
+  
+bird = plot_grid(a, b, labels = c("A", "B"), nrow = 1, align = "h")
+save_plot(paste(outdir, 'bird_proxies.png', sep=""), bird,
+          ncol = 2, nrow = 1, base_height = 3, base_aspect_ratio = 1.2
+          )
+```
+
+Dispersal and HWI are strongly correlated as one would hope, especially after removing the outlier (Sula). Phylogenetic distance and mtDNA distance are too, if you remove the one obvious outlier (Baeolophus).
+
+
+```{r}
+a = ggplot(s, aes(log_dispersal, log_dist)) + geom_point() + xlab("log(dispersal)") + ylab("log(mtDNA distance)")
+cortest = cor.test(s$log_dispersal, s$log_dist)
+save_plot(paste(outdir, 'mtDNAdist_dispersal.png', sep=""), a, base_aspect_ratio = 1.3, base_width = 4)
+```
+
+We have reason to believe that dispersal and mtDNA distance are correlated ... and they are, albeit weakly.
+
+## Main Analyses
+### All data GLMM
+First build full model & check for random effect: multiple measures, multiple hybrid zone transects for same two taxa, phylogenetic effects)
+
+```{r}
+m1 = lmer(log_width ~ log_dispersal * log_dist + (1 | critter / SystemID / TransectID) + (1 | type) + (1 + log_dist | critter), x)
+m1a = lmer(log_width ~ log_dispersal * log_dist + (1 | critter / SystemID / TransectID) + (1 | type), x)
+
+anova(m1, m1a)
+```
+
+Full model with random slopes of log\_dist within clades is singular (correlation for critter and log\_dist = -1.00). Random slopes removed to simplify model and avoid singularity. Using the full model, we remove outliers based on the conditional residuals (as output by the function resid()). 
+
+```{r}
+res1 <- resid(m1a, type = "pearson")
+x1 <- x[which(abs(res1) < 2.5),]
+outliers <- x[which(abs(res1) > 2.5),]
+```
+
+JPM used a threshold value of 2.5*SD (see R package LMERConvenienceFunctions). The outliers removed are somewhat surprising - there are many that are outlier values within levels of the random effect, like outlier values within hybrid zone transects (see plt2 below). Note that all estimated clines from the coral study, which all fall far from the regression line, remain in the data set. We chose not to remove the outliers as they might reflect real biological variation in introgression.
+
+Using 1) the remaining random effects, which are well justified given the structure of the data, we proceed with fitting the set of models with reduced complexity with respect to the fixed effects.
+
+```{r}
+## For model averaging we need to have identical data. 
+xc <- x1[which(complete.cases(x$log_width, x$log_dispersal, x$log_dist)),]
+
+m1 = lmer(log_width ~ log_dispersal * log_dist + (1 | critter / SystemID / TransectID) + (1 | type), xc)
+m2 = lmer(log_width ~ log_dispersal + log_dist + (1 | critter / SystemID / TransectID) + (1 | type), xc)
+m3 = lmer(log_width ~ log_dist + (1 | critter / SystemID / TransectID) + (1 | type), xc)
+m4 = lmer(log_width ~ log_dispersal + (1 | critter / SystemID / TransectID) + (1 | type), xc)
+m5 = lmer(log_width ~ 1 + (1 | critter / SystemID / TransectID) + (1 | type), xc)
+
+all_clines_models <- list(m1, m2, m3, m4, m5)
+res = summarize_model(all_clines_models)
+
+write.csv(res[[1]], paste(outdir, "full_model_fit1.csv", sep=""), row.names = F)
+write.csv(res[[2]], paste(outdir, "full_model_fit2.csv", sep=""), row.names = T)
+write.csv(res[[3]], paste(outdir, "full_model_fit3.csv", sep=""), row.names = T)
+```
+
+Adding in mean dist doesn't help improve model fit; the effect size is estimated to be pretty small. Adding in dispersal helps a lot. dAICc indicates log dispersal model is quantitatively superior to models including log_dist.
+
+```{r fig.width = 7, fig.asp = .62}
+cols = c("#e41a1c", "#377eb8", "#ffff33", "#984ea3", "#ff7f00", "#4daf4a", "black")
+
+plt1 = ggplot(xc, aes(log_dispersal, log_width)) + 
+  geom_point(pch=16, aes(color=critter)) + 
+  xlab("log(dispersal)") + ylab("log(cline width)") + 
+  scale_color_manual(values = cols, name="taxonomic group") 
+# + geom_abline(intercept = getME(m4, "fixef")[[1]], slope= getME(m4, "fixef")[[2]], size = 1.5)
+plt2 = ggplot(xc, aes(log_dist, log_width)) + 
+  geom_point(pch=16, aes(color=critter)) + 
+  xlab("log(mtDNA distance)") + ylab("log(cline width)") + 
+  scale_color_manual(values = cols, name="taxonomic group")
+
+# build plot
+prow <- plot_grid(
+  plt1 + theme(legend.position="none"),
+  plt2 + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("A", "B"),
+  hjust = -1,
+  nrow = 1
+)
+legend <- get_legend(plt1)
+p <- plot_grid(prow, legend, rel_widths = c(2, .6))
+
+save_plot(paste(outdir, 'all_data.png', sep=""), p,
+          nrow = 1, base_height = 3, base_width = 8
+          )
+```
+
+Check model fit characteristics for the best model too.
+
+```{r fig.width = 4, fig.asp = .62}
+plot(m4)
+qqnorm(resid(m4))
+qqline(resid(m4))
+```
+
+Q-Q Plot looks ok ... but it does look like the poorest fit is for a set of narrow clines.
+
+### Geometric mean cline analysis
+
+One cline estimate per hybrid zone; in this case, geometric mean.
+
+```{r}
+xy = aggregate(x$width, by=list(x$SystemID, x$critter, x$log_dist, x$log_dispersal), gm_mean)
+names(xy) = c("SystemID", "critter", "log_dist", "log_dispersal", "width")
+xy$log_width = log(xy$width)
+```
+
+
+```{r}
+m1y = lm(log_width ~ log_dispersal * log_dist * critter, data = xy)
+## Singularities in three-way interaction model, dropped.
+m2y = lm(log_width ~ log_dispersal * critter + log_dispersal * log_dist, data = xy)
+m3y = lm(log_width ~ log_dispersal * critter + log_dist * critter, data = xy)
+m4y = lm(log_width ~ log_dispersal * critter + log_dist, data = xy)
+m5y = lm(log_width ~ log_dispersal * log_dist + critter, data = xy)
+m6y = lm(log_width ~ log_dist * critter + log_dispersal, data = xy)
+m7y = lm(log_width ~ log_dispersal + log_dist + critter, data = xy)
+m8y = lm(log_width ~ log_dispersal + log_dist, data = xy)
+m9y = lm(log_width ~ log_dispersal + critter, data= xy)
+m10y = lm(log_width ~ log_dist + critter, data = xy)
+m11y = lm(log_width ~ log_dist, data = xy)
+m12y = lm(log_width ~ log_dispersal, data= xy)
+m13y = lm(log_width ~ critter, data= xy)
+m14y = lm(log_width ~ 1, data = xy)
+
+mean_clines_models <- list(m2y, m3y, m4y, m5y, m6y, m7y, m8y, m9y, m10y, m11y, m12y, m13y, m14y)
+### The best model is in general a good fit. The Eunicea hybrid zone is a funny outlying residual, but according to Cook's distance it doesn't disproportionately affect the model fit. We keep it in.
+
+res = summarize_lm(mean_clines_models)
+
+write.csv(res[[1]], paste(outdir, "simple_model_fit1.csv", sep=""), row.names = F)
+write.csv(res[[2]], paste(outdir, "simple_model_fit2.csv", sep=""), row.names = F)
+write.csv(res[[3]], paste(outdir, "simple_model_fit3.csv", sep=""), row.names = T)
+```
+
+In this most simple of models, we see the best fit.
+
+```{r fig.width = 7, fig.asp = .62}
+plt1 = ggplot(xy, aes(log_dispersal, log_width)) + 
+  geom_point(pch=16, aes(color=critter)) + 
+  xlab("log(dispersal)") + ylab("log(cline width)") + 
+  scale_color_manual(values = cols, name="taxonomic group") 
+plt2 = ggplot(xy, aes(log_dist, log_width)) + 
+  geom_point(pch=16, aes(color=critter)) + 
+  xlab("log(mtDNA distance)") + ylab("log(cline width)") + 
+  scale_color_manual(values = cols, name="taxonomic group")
+
+# build plot
+prow <- plot_grid(
+  plt1 + theme(legend.position="none"),
+  plt2 + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("A", "B"),
+  hjust = -1,
+  nrow = 1
+)
+legend <- get_legend(plt1)
+p <- plot_grid(prow, legend, rel_widths = c(2, .6))
+
+save_plot(paste(outdir, 'mean_data.png', sep=""), p,
+          nrow = 1, base_height = 3, base_width = 8
+          )
+```
+
+### Cline by taxon
+
+Do this analysis by taxon.
+
+```{r}
+xy1 <- xy[which(!xy$critter == "fish"),]
+xy1 <- xy1[which(!xy1$critter == "other invertebrates"),]
+
+t = split(xy1, xy1$critter)
+taxares = data.frame(critter=names(t), 
+                 num_studies=unlist(lapply(t, nrow)), 
+                 best_model=rep(NA, length(t)), 
+                 rsq=rep(NA, length(t)), 
+                 dispersal=rep(NA, length(t)), 
+                 mtDNA_dist=rep(NA, length(t)), 
+                 interaction = rep(NA, length(t)),
+                 dispersalRI =rep(NA, length(t)), 
+                 mtDNA_distRI =rep(NA, length(t)), 
+                 interactionRI = rep(NA, length(t)))
+
+coefres = data.frame(critter = rep(NA, 2 * length(t)),
+                     variable = rep(NA, 2 * length(t)),
+                     coef = rep(NA, 2 * length(t)),
+                     intercept = rep(NA, 2 * length(t)))
+
+for (i in 1:length(t)) {
+  full_interaction = lm(log_width ~ log_dispersal * log_dist, data = t[[i]])
+  no_interaction = lm(log_width ~ log_dispersal + log_dist, data = t[[i]])
+  dispersal_only = lm(log_width ~ log_dispersal, data = t[[i]])
+  distance_only = lm(log_width ~ log_dist, data = t[[i]])
+  intercept_only = lm(log_width ~ 1, data = t[[i]])
+  ms <- list(full_interaction, no_interaction, dispersal_only, distance_only, intercept_only)
+  names(ms) = c("full_interaction", "no_interaction", "dispersal_only", "distance_only", "intercept_only")
+  
+  res = summarize_lm(ms)
+  best = which(as.numeric(res[[1]][, 3]) == min(as.numeric(res[[1]][, 3])))
+  
+  best_model = ms[[best]]
+  coefbest = coef(best_model)
+  coefres[2 * i - 1, 'critter'] = names(t)[i]
+  coefres[2 * i, 'critter'] = names(t)[i]
+  coefres[2 * i - 1, 'intercept'] = coef(best_model)[1]
+  coefres[2 * i, 'intercept'] = coef(best_model)[1]
+  coefres[2 * i - 1, 'variable'] = 'log_dist'
+  coefres[2 * i, 'variable'] = 'log_dispersal'
+  if (length(which(names(coefbest) == "log_dist")) > 0) {
+    coefres[2 * i - 1, 'coef'] = coefbest[which(names(coefbest) == "log_dist")]
+  }
+  if (length(which(names(coefbest) == "log_dispersal")) > 0) {
+    coefres[2 * i, 'coef'] = coefbest[which(names(coefbest) == "log_dispersal")]
+  }
+  se_combine <- function(x) {
+    return(paste(x[1], " (SE=", x[2], ")", sep=""))
+  }
+  
+  taxares[i , "best_model"] = res[[1]][best, 1]
+  taxares[i , "rsq"] = res[[1]][best, 4]
+  taxares[i , "dispersal"] = se_combine(round(res[[2]][2, c(2,3)], 2))
+  taxares[i , "mtDNA_dist"] = se_combine(round(res[[2]][3, c(2,3)], 2))
+  taxares[i , "interaction"] = se_combine(round(res[[2]][4, c(2,3)], 2))
+  taxares[i , "dispersalRI"] = round(res[[3]][1, 1], 3)
+  taxares[i , "mtDNA_distRI"] = round(res[[3]][2, 1], 3)
+  taxares[i , "interactionRI"] = round(res[[3]][3, 1], 3)
+}
+
+knitr::kable(taxares)
+write.csv(taxares, paste(outdir, "taxon_results.csv", sep=""), row.names = T)
+```
+
+Well, this is interesting. When we divide things up by critter, not analyzing fish separately because there are too few data points, the results are idiosyncratic across clades. Why don't we see the predicted pattern for mtDNA distance in the "all-clades" analyses? Maybe because birds & mammals are showing the opposite pattern of what we would expect, where greater mtDNA distances are positively correlated with cline width. NAR show cleanest match to predictions of tension zone model. 
+
+```{r fig.width = 7, fig.asp = .7}
+coefres1 = coefres[coefres$variable  == 'log_dispersal', ]
+coefres2 = coefres[coefres$variable  == 'log_dist', ]
+a = ggplot(xy1, aes(log_dispersal, log_width)) + geom_point(alpha=0.5, size = 0.7) + xlab("log(dispersal)") + ylab("log(cline width)")  + facet_wrap(~critter, ncol = 5) + geom_abline(data = coefres1, aes(intercept = intercept, slope = coef))
+b = ggplot(xy1, aes(log_dist, log_width)) + geom_point(alpha=0.5, size = 0.7) + xlab("log(mtDNA distance)") + ylab("log(cline width)")  + facet_wrap(~critter, ncol = 5) +  geom_abline(data = coefres2, aes(intercept = intercept, slope = coef))
+
+plt3 = plot_grid(a, b, nrow = 2, labels=c("A", "B"))
+save_plot(paste(outdir, "by_taxon.png", sep=""), plt3, base_width = 10, base_height = 5)
+```
+
+## Supplementary Analyses
+
+### Bird analyses
+
+#### HWI as estimate of dispersal
+Note that dispersal model only for birds has already been done above. Similar analysis to above using log HWI instead of dispersal distance. Slightly different set (n = 37 hybrid zones).
+
+```{r}
+HWI = aggregate(x$width, by=list(x$SystemID, x$critter, x$log_dist, x$log_HWI), gm_mean)
+names(HWI) = c("SystemID", "critter", "log_dist", "log_HWI", "width")
+HWI$log_width = log(HWI$width)
+
+m1_HWI = lm(log_width ~ log_HWI * log_dist, data= HWI)
+m2_HWI = lm(log_width ~ log_HWI + log_dist, data= HWI)
+m3_HWI = lm(log_width ~ log_HWI, data= HWI)
+m4_HWI = lm(log_width ~ log_dist, data= HWI)
+m5_HWI = lm(log_width ~ 1, data = HWI)
+
+AICc(m1_HWI, m2_HWI, m3_HWI, m4_HWI, m5_HWI)
+HWI_models <- list(m1_HWI, m2_HWI, m3_HWI, m4_HWI, m5_HWI)
+
+res = summarize_lm(HWI_models)
+write.csv(res[[1]], paste(outdir, "birdHWI_model_fit1.csv", sep=""), row.names = F)
+write.csv(res[[2]], paste(outdir, "birdHWI_model_fit2.csv", sep=""), row.names = F)
+write.csv(res[[3]], paste(outdir, "birdHWI_model_fit3.csv", sep=""), row.names = T)
+```
+In HWI models, the HWI-only model is the preferred model by AIC, but just barely better than the HWI + mtDNA distance model. Again though, the residuals show the unexpected pattern, with the relationship opposite that expected by tension zone.
+
+```{r fig.width = 7, fig.asp = .62}
+a = ggplot(HWI, aes(log_HWI, log_width)) + geom_point(pch=21, fill = "black") + xlab("log(HWI)") + ylab("log(cline width)")
+b = ggplot(HWI, aes(log_dist, log_width)) + geom_point(pch=21, fill = "black") + xlab("log(mtDNA dist)") + ylab("log(cline width)")
+ab = plot_grid(a, b, labels = c("A", "B"), nrow = 1, align = "h")
+save_plot(paste(outdir, 'bird_HWI.png', sep=""), ab, ncol = 2, nrow = 1, base_aspect_ratio = 1.3, base_width = 4)
+```
+
+```{r fig.width = 7, fig.asp = .62}
+# the model with just dispersal is m3_HWI
+HWI$residuals = residuals(m3_HWI)
+ggplot(HWI, aes(log_dist, residuals)) + geom_point(pch=21, fill = "black") + xlab("log(mtDNA dist)") + ylab("residuals")
+```
+
+#### Div times as estimate of mtDNA dist
+
+Burleigh divergence time analyses should have n = 17 (18 Burleigh divergence times, but Manacus has no dispersal data)
+
+```{r}
+bird_burl_dt = aggregate(x$width, by=list(x$SystemID, x$critter, x$div_time_Burleigh, x$log_dispersal), gm_mean)
+names(bird_burl_dt) = c("SystemID", "critter", "Burleigh_dt", "log_disp", "width")
+bird_burl_dt$Burleigh_dt = scale(log(bird_burl_dt$Burleigh_dt))
+bird_burl_dt$log_width <- log(bird_burl_dt$width)
+
+m1_Burl = lm(log_width ~ log_disp * Burleigh_dt, data= bird_burl_dt)
+m2_Burl = lm(log_width ~ log_disp + Burleigh_dt, data= bird_burl_dt)
+m3_Burl = lm(log_width ~ log_disp, data= bird_burl_dt)
+m4_Burl = lm(log_width ~ Burleigh_dt, data= bird_burl_dt)
+m5_Burl = lm(log_width ~ 1, data = bird_burl_dt)
+
+Burl_models <- list(m1_Burl, m2_Burl, m3_Burl, m4_Burl, m5_Burl)
+res_burl = summarize_lm(Burl_models)
+Burl_averaged_model = model.avg(Burl_models)
+
+Burl_pred_log_disp <- seq(from = -1.5, to = 2.3, length.out = 100)
+Burl_pred_dt <- rep(0, 100)
+newdata <- data.frame(Burl_pred_log_disp, Burl_pred_dt)
+colnames(newdata) <- c("log_disp", "Burleigh_dt")
+
+newdata$Burl_disp_preds <- predict(object = Burl_averaged_model, newdata = newdata, full = TRUE)
+
+bird_burl_dt_with_outlier <- bird_burl_dt
+bird_burl_dt_with_outlier$outlier = rep(FALSE, nrow(bird_burl_dt_with_outlier))
+bird_burl_dt_with_outlier[which(bird_burl_dt$SystemID == 125), "outlier"] = TRUE
+ 
+##Sula is an outlier. Removed.
+bird_burl_dt <- bird_burl_dt[which(bird_burl_dt$SystemID != 125),]
+
+m1_Burl_no_Sula = lm(log_width ~ log_disp * Burleigh_dt, data= bird_burl_dt)
+m2_Burl_no_Sula = lm(log_width ~ log_disp + Burleigh_dt, data= bird_burl_dt)
+m3_Burl_no_Sula = lm(log_width ~ log_disp, data= bird_burl_dt)
+m4_Burl_no_Sula = lm(log_width ~ Burleigh_dt, data= bird_burl_dt)
+m5_Burl_no_Sula = lm(log_width ~ 1, data = bird_burl_dt)
+
+Burl_models_no_Sula <- list(m1_Burl_no_Sula, m2_Burl_no_Sula, m3_Burl_no_Sula, m4_Burl_no_Sula, m5_Burl_no_Sula)
+Burl_averaged_model_no_Sula = model.avg(Burl_models_no_Sula)
+res_noSula = summarize_lm(Burl_models_no_Sula)
+  
+newdata$Burl_disp_preds_no_Sula <- predict(object = Burl_averaged_model_no_Sula, newdata = newdata, full = FALSE)
+
+reg_line_with_outlier <- lm(Burl_disp_preds ~ log_disp, data = newdata)
+reg_line_no_outlier <- lm(Burl_disp_preds_no_Sula ~ log_disp, data = newdata)
+
+a = ggplot(bird_burl_dt_with_outlier, aes(log_disp, log_width)) + geom_point(aes(color = outlier), size = 2.5)  + xlab("log dispersal") + ylab("log hybrid zone width")  + scale_color_manual(values=c("black", "red")) + theme(legend.position="none") + geom_abline(intercept = reg_line_with_outlier$coefficients[[1]], slope = reg_line_with_outlier$coefficients[[2]]) + geom_abline(intercept = reg_line_no_outlier$coefficients[[1]], slope = reg_line_no_outlier$coefficients[[2]], linetype = 3)
+
+dt_vect <- (seq(from = -1.5, to = 1.75, length.out = 100))
+Burl_pred_dt <- c(dt_vect, dt_vect, dt_vect)
+Burl_pred_log_disp <- c(rep(-1,100), rep(0, 100), rep(1, 100))
+newdata <- data.frame(Burl_pred_log_disp, Burl_pred_dt)
+colnames(newdata) <- c("log_disp", "Burleigh_dt")
+
+newdata$Burl_disp_preds <- predict(object = Burl_averaged_model, newdata = newdata, full = TRUE)
+dt_line0 <- lm(Burl_disp_preds ~ Burleigh_dt, data = newdata[101:200,])
+# dt_lineneg1 <- lm(Burl_disp_preds ~ Burleigh_dt, data = newdata[1:100,])
+# dt_line1 <- lm(Burl_disp_preds ~ Burleigh_dt, data = newdata[201:300,])
+
+b = ggplot(bird_burl_dt, aes(Burleigh_dt, log_width)) + geom_point(size = 2.5) + xlab("log divergence time") + ylab("log hybrid zone width") + geom_abline(intercept = dt_line0$coefficients[[1]], slope = dt_line0$coefficients[[2]])# + geom_abline(intercept = dt_lineneg1$coefficients[[1]], slope = dt_lineneg1$coefficients[[2]], color = "blue") + geom_abline(intercept = dt_line1$coefficients[[1]], slope = dt_line1$coefficients[[2]], color = "orange")
+ab = plot_grid(a, b, labels = c("A", "B"), nrow = 1, align = "h")
+save_plot(paste(outdir, "burleigh_pairs.png" , sep=""), ab, ncol = 2, nrow = 1, base_aspect_ratio = 1.3, base_width = 5)
+
+write.csv(res_noSula[[1]], paste(outdir, "birdDiv_model_fit1.csv", sep=""), row.names = F)
+write.csv(res_noSula[[2]], paste(outdir, "birdDiv_model_fit2.csv", sep=""), row.names = F)
+write.csv(res_noSula[[3]], paste(outdir, "birdDiv_model_fit3.csv", sep=""), row.names = T)
+```
+
+### Phylogenetic effects via fixed effects
+
+```{r}
+m1p = lmer(log_width ~ log_dispersal * log_dist + log_dispersal * critter + (1 | SystemID / TransectID) + (1 | type), xc)
+m2p = lmer(log_width ~ log_dispersal * critter + (1 | SystemID / TransectID) + (1 | type), xc)
+m3p = lmer(log_width ~ log_dispersal * log_dist + (1 | SystemID / TransectID) + (1 | type), xc)
+m4p = lmer(log_width ~ log_dispersal + log_dist + critter + (1 | SystemID / TransectID) + (1 | type), xc)
+m11p = lmer(log_width ~ log_dispersal + log_dist + (1 | SystemID / TransectID) + (1 | type), xc)
+m5p = lmer(log_width ~ log_dispersal + critter + (1 | SystemID / TransectID) + (1 | type), xc)
+m6p = lmer(log_width ~ log_dist + critter + (1 | SystemID / TransectID) + (1 | type), xc)
+m7p = lmer(log_width ~ critter + (1 | SystemID / TransectID) + (1 | type), xc)
+m8p = lmer(log_width ~ log_dispersal + (1 | SystemID / TransectID) + (1 | type), xc)
+m9p = lmer(log_width ~ log_dist + (1 | SystemID / TransectID) + (1 | type), xc)
+m10p = lmer(log_width ~ 1 + (1 | SystemID / TransectID) + (1 | type), xc)
+
+phylom <- list(m1p, m2p, m3p, m4p, m5p, m6p, m7p, m8p, m9p, m10p, m11p)
+phyres = summarize_model(phylom)
+
+write.csv(phyres[[1]], paste(outdir, "phylogenetic_model_fit1.csv", sep=""), row.names = F)
+write.csv(phyres[[2]], paste(outdir, "phylogenetic_model_fit2.csv", sep=""), row.names = T)
+write.csv(phyres[[3]], paste(outdir, "phylogenetic_model_fit3.csv", sep=""), row.names = T)
+```
+
+Removing phylogenetic effect marginally improves model fit; the r-squared is `r r2beta(m1p, method="nsj")$Rsq[1]` vs. `r r2beta(m1, method="nsj")$Rsq[1]`. 
+
+```{r}
+ggplot(xc, aes(critter, log_dispersal)) + geom_boxplot() + xlab("taxa") + ylab("log(dispersal)") + coord_flip()
+ggplot(xc, aes(critter, log_dist)) + geom_boxplot() + xlab("taxa") + ylab("log(mtDNA distance)") + coord_flip()
+ggplot(xc, aes(critter, log_width)) + geom_boxplot() + xlab("taxa") + ylab("log(cline width)") + coord_flip()
+```
+
+The taxonomic effect (not surprisingly) is big, especially with respect to dispersal, but excluding it does not appear to significantly improve the model (or, maybe it isn't absorbing as much of the variance in dispersal as we might have thought.)
+
+Check model fit characteristics too.
+
+```{r fig.width = 4, fig.asp = .62}
+plot(m2p)
+qqnorm(resid(m2p))
+qqline(resid(m2p))
+```
+
+
+### mtDNA clines only
+all hybrid zone GLMM restricting to mtDNA clines only; first check random effects -- need to drop SystemID and transect ID because almost all of them are just represented by one data pt
+
+```{r}
+xm = x[x$type == 'mtDNA', ]
+
+##Model averaging requires that data sets are identical for each model
+xmcc <- xm[which(complete.cases(xm$log_width, xm$log_dispersal, xm$log_dist)),]
+
+m1m = lmer(log_width ~ log_dispersal * log_dist + (1 | critter), xmcc)
+
+# res1m <- resid(m1m, type = "pearson")
+# x1m <- xm[which(abs(res1m) < 2.5),]
+# outliers_m <- xm[which(abs(res1m) > 2.5),]
+## Note here - the residuals here again are large residuals of the random effect, and not large residuals of the fixed effects. My thinking here is that we do not extract these outliers.
+
+m2m = lmer(log_width ~ log_dispersal + log_dist + (1 | critter), xmcc)
+m3m = lmer(log_width ~ log_dist + (1 | critter ), xmcc)
+m4m = lmer(log_width ~ log_dispersal + (1 | critter ), xmcc)
+m5m = lmer(log_width ~ 1 + (1 | critter ), xmcc)
+
+models1 <- list(m1m, m2m, m3m, m4m, m5m)
+res = summarize_model(models1)
+
+write.csv(res[[1]], paste(outdir, "mtDNA_model_fit1.csv", sep=""), row.names = F)
+write.csv(res[[2]], paste(outdir, "mtDNA_model_fit2.csv", sep=""), row.names = T)
+write.csv(res[[3]], paste(outdir, "mtDNA_model_fit3.csv", sep=""), row.names = T)
+```
+
+Restricting to mitochondrial clines to a much better model fit; the r-squared is `r r2beta(m1m, method="nsj")$Rsq[1]` vs. `r r2beta(m1, method="nsj")$Rsq[1]`. 
+
+Check model fit characteristics too.
+
+```{r fig.width = 4, fig.asp = .62}
+plot(m4m)
+qqnorm(resid(m4m))
+qqline(resid(m4m))
+```
+
+This model is clearly showing a lot of bias, but residuals appear to be okay.
+
+### Use only common mtDNA genes
+
+What if some of our failure to explain things is because we are using so many genes to estimate genetic distance?
+
+```{r}
+g = xc[xc$mtDNA_genes == "cytb", ]
+
+g1 = lmer(log_width ~ log_dispersal * log_dist + (1 | type) + (1 | critter / SystemID / TransectID), g)
+g2 = lmer(log_width ~ log_dispersal + log_dist  + (1 | type) + (1 | critter / SystemID / TransectID), g)
+g3 = lmer(log_width ~ log_dispersal + (1 | type) + (1 | critter /  SystemID / TransectID), g)
+g4 = lmer(log_width ~ log_dist + (1 | type) + (1 |critter /  SystemID / TransectID), g)
+g5 = lmer(log_width ~ 1 + (1 | type) + (1 |critter /  SystemID / TransectID), g)
+
+models1 <- list(g1, g2, g3, g4, g5)
+res = summarize_model(models1)
+
+write.csv(res[[1]], paste(outdir, "most_mtDNA_model_fit1.csv", sep=""), row.names = F)
+write.csv(res[[2]], paste(outdir, "most_mtDNA_model_fit2.csv", sep=""), row.names = T)
+write.csv(res[[3]], paste(outdir, "most_mtDNA_model_fit3.csv", sep=""), row.names = T)
+
+```
+
+### Terrestrial-only GLMM 
+
+Remove fish and marine inverts. First figure out random effects.
+
+```{r}
+xt = xc[xc$critter != 'fish', ]
+xt = xt[xt$Taxon1 != 'Eunicea flexuosa lineage 1',]
+xt = xt[xt$Taxon1 != 'Mytilus edulis',]
+xt = xt[xt$Taxon1 != 'Crassostrea virginica Atlantic',]
+xt = xt[xt$Taxon1 != 'Menippe mercenaria',]
+xt = xt[xt$Taxon1 != 'Mytilus edulis North sea',]
+xt = xt[xt$Taxon1 != 'Patella rustica C',]
+```
+
+
+```{r}
+## Remover outliers here.
+# res1t <- resid(m1t, type = "pearson")
+# x1t <- xt[which(abs(res1t) < 2.5),]
+# outliers_t <- x1t[which(abs(res1t) > 2.5),]
+
+m1t = lmer(log_width ~ log_dispersal * log_dist  + (1 | critter / SystemID / TransectID) + (1 | type), xt)
+m2t = lmer(log_width ~ log_dispersal + log_dist  + (1 | critter / SystemID / TransectID) + (1 | type), xt)
+m3t = lmer(log_width ~ log_dist  + (1 | critter / SystemID / TransectID) + (1 | type), xt)
+m4t = lmer(log_width ~ log_dispersal  + (1 | critter / SystemID / TransectID) + (1 | type), xt)
+m5t = lmer(log_width ~ 1  + (1 | critter / SystemID / TransectID) + (1 | type), xt)
+
+models1 <- list(m1t, m2t, m3t, m4t, m5t)
+res = summarize_model(models1)
+
+write.csv(res[[1]], paste(outdir, "terrestrial_model_fit1.csv", sep=""), row.names = F)
+write.csv(res[[2]], paste(outdir, "terrestrial_model_fit2.csv", sep=""), row.names = T)
+write.csv(res[[3]], paste(outdir, "terrestrial_model_fit3.csv", sep=""), row.names = T)
+```
+
+Removing the non-terrestial organisms leads to a somewhat better model fit; the r-squared is `r r2beta(m1t, method="nsj")$Rsq[1]` vs. `r r2beta(m1, method="nsj")$Rsq[1]`.
+
+```{r fig.width = 7, fig.asp = .62}
+ggplot(xt, aes(log_dispersal, log_width)) + geom_point(pch=21, aes(fill=critter)) + xlab("log(dispersal)") + ylab("log(cline width)")
+ggplot(xt, aes(log_dist, log_width)) + geom_point(pch=21, aes(fill=critter)) + xlab("log(mtDNA dist)") + ylab("log(cline width)")
+```
+
+Check model fit characteristics too.
+
+```{r fig.width = 4, fig.asp = .62}
+plot(m4t)
+qqnorm(resid(m4t))
+qqline(resid(m4t))
+```
+
+Doesn't appear to be doing a great job for very narrow clines.
+
+### Outlier plot 
+```{r}
+xy = aggregate(x$width, by=list(x$SystemID, x$critter, x$mean_dist, x$dispersal), gm_mean)
+names(xy) = c("SystemID", "critter", "dist", "dispersal", "width")
+
+xy$outlier = rep("not", nrow(xy))
+
+exp_width <- function(s, sigma) {
+  return(sqrt(8) * sigma /sqrt(s))
+}
+
+xy[xy$width < sapply(xy$dispersal, exp_width, s = 1), 'outlier'] = 'low'
+xy[xy$width > sapply(xy$dispersal, exp_width, s = 0.0001), 'outlier'] = 'high'
+
+outliers = ggplot(xy, aes(dispersal, width, fill = outlier)) + 
+  geom_point(shape = 21, size = 2, alpha = 0.8) + 
+  scale_x_log10() + scale_y_log10() + 
+  geom_abline(slope = 1, intercept = log10(sqrt(8)) + log10(1  / sqrt(1))) + 
+  geom_abline(slope = 1, intercept = log10(sqrt(8)) + log10(1 / sqrt(0.0001))) +
+  scale_fill_manual(values = brewer.pal(3, "Set1")) +
+  theme(legend.position="none")
+save_plot(paste(outdir, 'outlier.png', sep=""), outliers,
+          ncol = 1, nrow = 1, base_height = 3, base_aspect_ratio = 1.2
+)
+```
+
+## Barton model analyses
+### Cline width variance
+
+Look at predictors of cline width variance by mtDNA dist & dispersal for those contact zones where multiple clines were measured, all clines
+
+```{r}
+cv <- function(vec) { return(sd(vec, na.rm=TRUE) / mean(vec, na.rm=TRUE)) }
+
+cmean = aggregate(x$width, by=list(x$SystemID), mean)
+cvar = aggregate(x$width, by=list(x$SystemID, x$critter, x$log_dist, x$log_dispersal), sd)
+names(cvar) = c("SystemID", "critter", "log_dist", "log_dispersal", "sd")
+cvar = cvar[complete.cases(cvar$sd), ]
+cvar$cv = cvar$sd / cmean[match(cvar$SystemID, cmean$Group.1), "x"]
+cts = table(x$SystemID)
+cvar$num_clines = cts[match(cvar$SystemID, names(cts))]
+
+cvar$log_sd = log(cvar$sd)
+cvar$log_cv = log(cvar$cv)
+cvar = cvar[is.finite(cvar$log_cv), ]
+
+cvar1 = cvar[cvar$sd > 0, ]
+sd1 = lm(log_sd ~ log_dist + log_dispersal + critter, data = cvar1)
+sd2 = lm(log_sd ~ log_dist + critter, data = cvar1)
+sd3 = lm(log_sd ~ log_dispersal + critter, data = cvar1)
+sd4 = lm(log_sd ~ log_dist + log_dispersal, data = cvar1)
+sd5 = lm(log_sd ~ log_dispersal, data = cvar1)
+sd6 = lm(log_sd ~ log_dist, data = cvar1)
+mods = list(sd1, sd2, sd3, sd4, sd5, sd6)
+summarize_lm(mods)
+
+a = ggplot(cvar1, aes(log_dist, log_sd)) + geom_point() + xlab("log(mtDNA distance)") + ylab("st. dev. of cline width")
+save_plot(paste(outdir, "barton_prediction.png" , sep=""), a, base_height = 3, base_width = 4)
+ 
+cv1 = lm(cvar$log_cv ~ cvar$log_dist + cvar$log_dispersal + cvar$critter)
+cv2 = lm(cvar$log_cv ~ cvar$log_dist + cvar$critter)
+cv3 = lm(cvar$log_cv ~ cvar$critter + cvar$log_dispersal)
+```
+
+The only thing that predicts s.d. of cline width is dispersal, with greater dispersal leading to greater s.d. But, we see no pattern in coefficient of variation, which controls for difference in mean cline width.
+
+```{r fig.width = 7, fig.asp = .7}
+ggplot(cvar, aes(log_dispersal, log_sd)) + geom_point(pch=21, aes(fill=critter)) + xlab("log(dispersal)") + ylab("sd of cline width")
+ggplot(cvar, aes(log_dist, log_sd)) + geom_point(pch=21, aes(fill=critter)) + xlab("log(mtDNA dist)") + ylab("sd of cline width")
+ggplot(cvar, aes(log_dispersal, log_cv)) + geom_point(pch=21, aes(fill=critter)) + xlab("log(dispersal)") + ylab("cv of cline width")
+ggplot(cvar, aes(log_dist, log_cv)) + geom_point(pch=21, aes(fill=critter)) + xlab("log(mtDNA dist)") + ylab("cv of cline width")
+```
+
+
+### Selection Strength
+
+Measure selection strength for each cline using Barton equation -- see how that correlates to mtDNA dist across clines
+
+```{r}
+sel = aggregate(x$width, by=list(x$SystemID, x$critter, x$log_dist, x$log_dispersal, x$dispersal), gm_mean)
+names(sel) = c("SystemID", "critter", "log_dist", "log_dispersal", "dispersal", "width")
+sel$selection = 8 * (sel$dispersal / sel$width) ^ 2
+```
+
+First thing to note is that there are a number of systems where selection against heterozygotes is greater than 1! 
+
+```{r}
+ggplot(sel, aes(selection)) + geom_histogram(binwidth=0.25) + scale_x_log10() + xlab("selection strength") + geom_vline(xintercept=1, colour="red")
+```
+
+This is biologically impossible, and likely reflects over-estimates of dispersal length. It could also reflect that this equation breaks down at higher selection strengths.
+
+```{r}
+sel$Taxon1 = x[match(sel$SystemID, x$SystemID), "Taxon1"]
+sel$Taxon2 = x[match(sel$SystemID, x$SystemID), "Taxon2"]
+sel$critter = x[match(sel$SystemID, x$SystemID), "critter"]
+
+knitr::kable(sel[sel$selection > 1, c("Taxon1", "critter", "dispersal", "width", "selection")])
+```
+
+The main pattern that I see is that birds appear over-represented. Don't know what we should do with this information. _Eunicea flexuosa_ is again a huge outlier.
+
+```{r fig.width = 7, fig.asp = .62}
+sel2 = sel[sel$selection < 10000,]
+sel_m = lm(log(sel2$selection) ~ sel2$log_dist)
+ggplot(sel, aes(log_dist, selection)) + geom_point(pch=21, aes(fill=critter)) + scale_y_log10() + xlab("log(mtDNA distance)") + facet_wrap(~critter)
+```
+
+No pattern except for in NAR.
