@@ -26,7 +26,7 @@ calc_dist_dna <- function(file, suffix1, suffix2) {
 	tree = bionjs(dTN93)
 	colors = rep('navyblue', length(tree$tip.label))
 	colors[tree$tip.label %in% taxa1] = 'maroon'
-	# make tip labels smaller
+	 # make tip labels smaller
 	if (length(tree$tip.label) > 150) {
 		tipcex = 0.5
 	} else if (length(tree$top.label > 75)) {
@@ -65,7 +65,14 @@ calc_dist_dna <- function(file, suffix1, suffix2) {
 	mean<-c(mean_TN93, mean_K80)
 	res<-cbind(res,mean)
 	rownames(res)<-c("TN93", "K80")
-	return(res)
+	print(res)
+	return(tree)
 }
 
-calc_dist_dna("~/Dropbox/hz_metaanalysis/fastas/jay_used_for_dist_calc/Strix_occidentalis_CR_aligned.fasta", '1', '2')
+t = calc_dist_dna("~/Dropbox/hz_metaanalysis/fastas/jay_used_for_dist_calc/Mytilus_edulis_trossulus_COIII_aligned.fasta", '1', '2')
+
+dev.off()
+tips = t$tip.label
+colors = rep("black", length(tips))
+colors[ grep("_2$", tips)] = "red"
+plot(t, tip.color = colors, cex = 0.6)

@@ -40,11 +40,11 @@ ggplot(dd, aes(space, fitness)) + xlim(-0.15, 1) +
   theme(plot.margin = unit(c(0.1, 0.5, 0.1, 0.95), units = "cm"))
 }
 
-b = plot_graph(d1, pts1, "", "fitness")
-# c = plot_graph(d2, pts2, expression(paste(sigma ^ o, "= ", sigma ^"*")), "fitness")
-c = plot_graph(d2, pts2, "", "fitness")
-c + draw_label(expression(paste(sigma ^ o, "= ", sigma ^"*")), 0.9, 0.05)
-d = plot_graph(d1, pts1, "space", expression("settlement \nprobability"))
+b = plot_graph(d1, pts1, "", "Fitness")
+c = plot_graph(d2, pts2, expression(paste(sigma ^ o, "= ", sigma ^"*")), "fitness")
+c = plot_graph(d2, pts2, "", "Fitness")
+c = c + draw_label(expression(paste(sigma ^ o, "= ", sigma ^"*")), 0.9, 0.05)
+d = plot_graph(d1, pts1, "Space", expression("Settlement \nprobability"))
 
 pts = data.frame(x = runif(50, 0.05, 0.95), 
                  y = runif(50, 0.05, 0.95),
@@ -67,7 +67,7 @@ for (i in 1:nrow(pts)) {
 }
 
 dev.new()
-par(xpd = NA, bg = "transparent", mar = c(0, 5, 0, 0))
+par(xpd = NA, bg = "transparent", mar = c(0, 3, 0, 0))
 plot(NULL, xlim=c(0, 1), ylim=c(0, 1), axes = F, xlab = "", ylab = "")
 gradient.rect(0, 0, 1, 1,
               col = gray.colors(100, start = 0.1, end = 0.9, alpha = 0.9),
@@ -91,4 +91,4 @@ dev.off()
 
 xx = plot_grid(a, b, c, d, nrow = 4, labels = c("A", "B", "C", "D"), 
           rel_heights = c(1.5, 1, 1, 1))
-save_plot("~/Desktop/figure1.pdf", xx, nrow=4, base_height = 1.5, base_width = 4)
+save_plot("~/Desktop/figure1.pdf", xx, nrow=4, base_height = 1.8, base_width = 4)
